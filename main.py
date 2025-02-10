@@ -68,7 +68,7 @@ def get_hand_values_per_point(points: ee.FeatureCollection) -> pd.DataFrame:
 
 
 def main():
-    ee.Initialize(project="ee-irc")
+    ee.Initialize(project="ee-paulomoraes") # isso aqui deve ser mudado para o nome do projeto
 
     if len(sys.argv) < 3:
         print("Missing arguments, either 'file_path', 'address_column' or both.")
@@ -94,3 +94,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+"""
+    
+    1. Dropa as linhas que não tem coordenadas
+    2. Rola de mexer para ele pegar mais pontos válidos
+    3. Preciso de trocar o main ser um arg para um metodo de classe. Atualmente tem um parâmetro indicando qual o nome da coluna
+    4. Duas colunas, uma latitude e outra longitude    
+    
+"""
