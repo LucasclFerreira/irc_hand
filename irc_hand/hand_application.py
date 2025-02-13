@@ -25,6 +25,9 @@ Dependências:
     - geopandas
     - shapely
     - geopy
+    - asyncio
+    - aiohttp
+    - aiolimiter
 
 Exemplo de uso via script de linha de comando:
 -----------------------------------------------
@@ -49,10 +52,12 @@ Exemplo de uso via código:
 Notas:
 ------
     - Para evitar sobrecarga no serviço de geocodificação do Nominatim, foi incluído um delay de 1 segundo
-      entre as requisições.
+      entre as requisições na versão síncrona.
     - As linhas com geocodificação malsucedida (ou seja, onde não foi possível obter coordenadas) são descartadas.
     - A conversão para `ee.FeatureCollection` requer a conversão intermediária para GeoJSON.
     - É necessário ter as credenciais e acesso apropriado configurado para o Google Earth Engine.
+    - Para a versão assíncrona, utilizamos as bibliotecas aiohttp e aiolimiter para disparar requisições em paralelo
+      (limitadas a 1 por segundo) sem bloquear a execução.
 
 Licença:
 --------
@@ -70,10 +75,53 @@ import time
 import json
 from typing import Optional, List
 
+import asyncio
+import aiohttp
+from aiolimiter import AsyncLimiter
+
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
 from geopy.geocoders import Nominatim
+
+
+async def async_geocode_address(session: aiohttp.ClientSession, address: str, limiter: AsyncLimiter):
+    """
+    Realiza a requisição assíncrona para geocodificação de um endereço usando a API do Nominatim.
+    Agora com parâmetros adicionais para melhorar a assertividade:
+      - 'addressdetails': Retorna detalhes do endereço.
+      - 'countrycodes': Restringe a busca ao Brasil.
+      - 'accept-language': Define o idioma para português (Brasil).
+    """
+    async with limiter:
+        params = {
+            'q': address,
+            'format': 'json',
+            'addressdetails': 1,
+            'limit': 1,
+            'countrycodes': 'br',
+            'accept-language': 'pt-BR'
+        }
+        async with session.get("https://nominatim.openstreetmap.org/search", params=params) as response:
+            if response.status == 200:
+                data = await response.json()
+                if data:
+                    lat = float(data[0]['lat'])
+                    lon = float(data[0]['lon'])
+                    return address, lat, lon
+    return address, None, None
+
+
+async def geocode_all_addresses(addresses: list) -> list:
+    """
+    Cria uma sessão aiohttp e dispara tarefas assíncronas para todos os endereços.
+    Utiliza um rate limiter para não exceder 1 requisição por segundo.
+    """
+    limiter = AsyncLimiter(max_rate=1, time_period=1)
+    async with aiohttp.ClientSession() as session:
+        tasks = [async_geocode_address(session, address, limiter) for address in addresses]
+        results = await asyncio.gather(*tasks)
+    return results
 
 
 class HandCalculator:
@@ -132,7 +180,7 @@ class HandCalculator:
 
     def collect_coordinates(self, address_column: str) -> ee.FeatureCollection:
         """
-        Realiza a geocodificação dos endereços e retorna uma FeatureCollection do Earth Engine.
+        Realiza a geocodificação dos endereços de forma síncrona e retorna uma FeatureCollection do Earth Engine.
 
         Para cada endereço presente na coluna especificada, o método utiliza o serviço de geocodificação
         do Nominatim para obter latitude e longitude. Além disso, ele adiciona três novas colunas ao DataFrame:
@@ -154,7 +202,7 @@ class HandCalculator:
         if self._df is None:
             raise ValueError("Dados não carregados. Chame o método load_data primeiro.")
 
-        print("Pegando coordenadas...")
+        print("Pegando coordenadas (síncrono)...")
         geolocator = Nominatim(user_agent="hand_irb")
         latitudes: List[Optional[float]] = []
         longitudes: List[Optional[float]] = []
@@ -170,7 +218,57 @@ class HandCalculator:
                 latitudes.append(None)
                 longitudes.append(None)
                 geometries.append(None)
-            time.sleep(1) 
+            time.sleep(1)
+
+        self._df["Latitude"] = latitudes
+        self._df["Longitude"] = longitudes
+        self._df["geometry"] = geometries
+
+        gdf = gpd.GeoDataFrame(self._df, crs="EPSG:4326")
+        gdf = gdf.dropna(subset=["geometry"])
+
+        geojson = json.loads(gdf.to_json())
+        feature_collection = ee.FeatureCollection(geojson)
+
+        return feature_collection
+
+    def collect_coordinates_async(self, address_column: str) -> ee.FeatureCollection:
+        """
+        Realiza a geocodificação dos endereços de forma assíncrona e retorna uma FeatureCollection do Earth Engine.
+
+        Para cada endereço presente na coluna especificada, o método utiliza requisições assíncronas para
+        o serviço de geocodificação do Nominatim (usando aiohttp e aiolimiter) para obter latitude e longitude.
+        Além disso, ele adiciona três novas colunas ao DataFrame:
+          - 'Latitude': Latitude obtida.
+          - 'Longitude': Longitude obtida.
+          - 'geometry': Objeto Point (do shapely) formado a partir das coordenadas.
+
+        As linhas com falha na geocodificação (resultando em None) são descartadas posteriormente.
+
+        Args:
+            address_column (str): Nome da coluna que contém os endereços.
+
+        Returns:
+            ee.FeatureCollection: Coleção de features do Earth Engine contendo a geometria dos pontos.
+
+        Raises:
+            ValueError: Se os dados não tiverem sido carregados previamente com `load_data()`.
+        """
+        if self._df is None:
+            raise ValueError("Dados não carregados. Chame o método load_data primeiro.")
+
+        print("Pegando coordenadas (assíncrono)...")
+        addresses = list(self._df[address_column])
+        results = asyncio.run(geocode_all_addresses(addresses))
+
+        latitudes: List[Optional[float]] = []
+        longitudes: List[Optional[float]] = []
+        geometries: List[Optional[Point]] = []
+
+        for address, lat, lon in results:
+            latitudes.append(lat)
+            longitudes.append(lon)
+            geometries.append(Point(lon, lat) if lat is not None and lon is not None else None)
 
         self._df["Latitude"] = latitudes
         self._df["Longitude"] = longitudes
@@ -250,7 +348,7 @@ class HandCalculator:
         df.to_csv(output_path, index=False)
         print(f"Resultados salvos em {output_path}")
 
-    def run(self, file_path: str, address_column: str, output_path: str) -> None:
+    def run(self, file_path: str, address_column: str, output_path: str, use_async: bool = True) -> None:
         """
         Executa o fluxo completo de processamento dos dados.
 
@@ -264,9 +362,14 @@ class HandCalculator:
             file_path (str): Caminho do arquivo de entrada (CSV ou Excel).
             address_column (str): Nome da coluna que contém os endereços para geocodificação.
             output_path (str): Caminho para salvar o arquivo CSV de saída.
+            use_async (bool, opcional): Define se a geocodificação será feita de forma assíncrona.
+                                        Padrão é True.
         """
         self.load_data(file_path)
-        points = self.collect_coordinates(address_column)
+        if use_async:
+            points = self.collect_coordinates_async(address_column)
+        else:
+            points = self.collect_coordinates(address_column)
         result_df = self.calculate_hand_values(points)
         self.save_results(result_df, output_path)
 
@@ -300,3 +403,7 @@ class HandCalculator:
 
         instance = cls(project_name)
         instance.run(file_path, address_column, output_path)
+
+
+if __name__ == "__main__":
+    HandCalculator('ee-paulomoraes').run_from_cli()
