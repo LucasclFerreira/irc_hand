@@ -242,6 +242,10 @@ class HandCalculator:
                 longitudes.append(None)
                 geometries.append(None)
                 print("[Sync] Endereço não encontrado.")
+                # salvar os endereços não encontrados em um arquivo separado
+                with open('enderecos_nao_encontrados.txt', 'a') as f:
+                    f.write(f"{address}\n")
+                print("[System] Endereço não encontrado salvo")
             time.sleep(0.1)
 
         self._df["Latitude"] = latitudes
@@ -435,4 +439,9 @@ class HandCalculator:
 
 
 if __name__ == "__main__":
-    HandCalculator().run_from_cli()
+    hand = HandCalculator(project_name="ee-paulomoraes")
+    hand.run(
+        'teste.csv',
+        'ADDRESSES',
+        'output.csv'
+    )
