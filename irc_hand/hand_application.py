@@ -95,14 +95,10 @@ if not GOOGLE_API_KEY:
 
 
 async def async_geocode_address(session: aiohttp.ClientSession, address: str, limiter: AsyncLimiter):
-    """
-    Realiza a requisição assíncrona para geocodificação de um endereço usando a API do Google Maps.
-    Agora com parâmetros adicionais para melhorar a assertividade:
-      - 'address': O endereço a ser geocodificado.
-      - 'key': A chave de API do Google Maps.
-      - 'region': Restringe a busca ao Brasil.
-      - 'language': Define o idioma para português (Brasil).
-    """
+    if not address or str(address).lower() == 'nan':
+        print(f"[Async] Endereço inválido: {address}")
+        return address, None, None
+
     print(f"[Async] Geocodificando: {address}")
     async with limiter:
         params = {
@@ -122,6 +118,7 @@ async def async_geocode_address(session: aiohttp.ClientSession, address: str, li
                     return address, lat, lon
     print(f"[Async] Não foi possível encontrar: {address}")
     return address, None, None
+
 
 
 async def geocode_all_addresses(addresses: list) -> list:
@@ -192,11 +189,12 @@ class HandCalculator:
         print(f"[Load Data] Carregando dados do arquivo: {file_path}")
         extension = file_path.split('.')[-1].lower()
         if extension == "csv":
-            self._df = pd.read_csv(file_path)
+            self._df = pd.read_csv(file_path, sep=';')
         elif extension in ["xls", "xlsx"]:
             self._df = pd.read_excel(file_path)
         else:
             raise ValueError("Formato de arquivo inválido. Utilize um arquivo CSV ou Excel.")
+        self._df["id"] = self._df.index
         print(f"[Load Data] Dados carregados com sucesso. Total de registros: {len(self._df)}")
 
     def collect_coordinates(self, address_column: str) -> ee.FeatureCollection:
@@ -223,41 +221,39 @@ class HandCalculator:
         if self._df is None:
             raise ValueError("Dados não carregados. Chame o método load_data primeiro.")
 
-        print("[Sync] Iniciando geocodificação síncrona...")
-        geolocator = GoogleV3(api_key=GOOGLE_API_KEY, timeout=10)
+        print("[Async] Iniciando geocodificação assíncrona...")
+        addresses = list(self._df[address_column])
+        results = asyncio.run(geocode_all_addresses(addresses))
+
         latitudes: List[Optional[float]] = []
         longitudes: List[Optional[float]] = []
         geometries: List[Optional[Point]] = []
+        missing_addresses: List[bool] = []  # Lista para armazenar o status booleano da geocodificação
 
-        for index, address in enumerate(self._df[address_column], start=1):
-            print(f"[Sync] Geocodificando ({index}/{len(self._df[address_column])}): {address}")
-            location = geolocator.geocode(address)
-            if location:
-                latitudes.append(location.latitude)
-                longitudes.append(location.longitude)
-                geometries.append(Point(location.longitude, location.latitude))
-                print(f"[Sync] Endereço encontrado: ({location.latitude}, {location.longitude})")
+        for index, (address, lat, lon) in enumerate(results, start=1):
+            print(f"[Async] Processando ({index}/{len(results)}): {address}")
+            latitudes.append(lat)
+            longitudes.append(lon)
+            if lat is not None and lon is not None:
+                geometries.append(Point(lon, lat))
+                missing_addresses.append(False)  # Geocodificação bem-sucedida
             else:
-                latitudes.append(None)
-                longitudes.append(None)
                 geometries.append(None)
-                print("[Sync] Endereço não encontrado.")
-                # salvar os endereços não encontrados em um arquivo separado
-                with open('enderecos_nao_encontrados.txt', 'a') as f:
-                    f.write(f"{address}\n")
-                print("[System] Endereço não encontrado salvo")
-            time.sleep(0.1)
+                missing_addresses.append(True)   # Geocodificação falhou
 
         self._df["Latitude"] = latitudes
         self._df["Longitude"] = longitudes
         self._df["geometry"] = geometries
+        self._df["MISSING_ADDRESS"] = missing_addresses  # Coluna agora com valores booleanos
 
-        print("[Sync] Conversão para GeoDataFrame...")
+        print("[Async] Conversão para GeoDataFrame...")
+        # Cria o GeoDataFrame completo...
         gdf = gpd.GeoDataFrame(self._df, crs="EPSG:4326")
-        gdf = gdf.dropna(subset=["geometry"])
-        geojson = json.loads(gdf.to_json())
+        # E filtra apenas os registros com geometria válida para enviar ao Earth Engine:
+        gdf_valid = gdf[gdf["geometry"].notnull()]
+        geojson = json.loads(gdf_valid.to_json())
         feature_collection = ee.FeatureCollection(geojson)
-        print("[Sync] Geocodificação síncrona concluída.")
+        print("[Async] Geocodificação assíncrona concluída.")
 
         return feature_collection
 
@@ -268,11 +264,13 @@ class HandCalculator:
         Para cada endereço presente na coluna especificada, o método utiliza requisições assíncronas para
         o serviço de geocodificação do Google Maps (usando aiohttp e aiolimiter) para obter latitude e longitude.
         Além disso, ele adiciona três novas colunas ao DataFrame:
-          - 'Latitude': Latitude obtida.
-          - 'Longitude': Longitude obtida.
-          - 'geometry': Objeto Point (do shapely) formado a partir das coordenadas.
+        - 'Latitude': Latitude obtida.
+        - 'Longitude': Longitude obtida.
+        - 'geometry': Objeto Point (do shapely) formado a partir das coordenadas.
+        - 'MISSING_ADDRESS': Booleano que indica True se a geocodificação falhar ou False caso contrário.
 
-        As linhas com falha na geocodificação (resultando em None) são descartadas posteriormente.
+        As linhas com falha na geocodificação (resultando em None) serão descartadas na conversão para GeoDataFrame,
+        mas a coluna "MISSING_ADDRESS" ficará disponível no DataFrame final.
 
         Args:
             address_column (str): Nome da coluna que contém os endereços.
@@ -293,16 +291,23 @@ class HandCalculator:
         latitudes: List[Optional[float]] = []
         longitudes: List[Optional[float]] = []
         geometries: List[Optional[Point]] = []
+        missing_addresses: List[bool] = []  # Lista para armazenar o status booleano da geocodificação
 
         for index, (address, lat, lon) in enumerate(results, start=1):
             print(f"[Async] Processando ({index}/{len(results)}): {address}")
             latitudes.append(lat)
             longitudes.append(lon)
-            geometries.append(Point(lon, lat) if lat is not None and lon is not None else None)
+            if lat is not None and lon is not None:
+                geometries.append(Point(lon, lat))
+                missing_addresses.append(False)  # Geocodificação bem-sucedida
+            else:
+                geometries.append(None)
+                missing_addresses.append(True)   # Geocodificação falhou
 
         self._df["Latitude"] = latitudes
         self._df["Longitude"] = longitudes
         self._df["geometry"] = geometries
+        self._df["MISSING_ADDRESS"] = missing_addresses  # Coluna agora com valores booleanos
 
         print("[Async] Conversão para GeoDataFrame...")
         gdf = gpd.GeoDataFrame(self._df, crs="EPSG:4326")
@@ -312,6 +317,7 @@ class HandCalculator:
         print("[Async] Geocodificação assíncrona concluída.")
 
         return feature_collection
+
 
     def calculate_hand_values(self, points: ee.FeatureCollection) -> pd.DataFrame:
         """
@@ -344,6 +350,7 @@ class HandCalculator:
             "fileFormat": "PANDAS_DATAFRAME"
         })
 
+        # Mapeia os valores HAND para as descrições categóricas
         formatted_df = (
             points_df
             .drop("geo", axis=1)
@@ -359,8 +366,12 @@ class HandCalculator:
             )
         )
         print("[HAND] Amostragem e mapeamento dos valores HAND concluídos.")
-        return formatted_df
 
+        # Realiza o merge dos resultados com o DataFrame original (usando a coluna 'id')
+        # Assim, os registros sem geocodificação (que não foram amostrados) terão os campos HAND vazios.
+        final_df = self._df.merge(formatted_df[['id', 'categoria_hand']], on='id', how='left')
+
+        return final_df
     def save_results(self, df: pd.DataFrame, output_path: str) -> None:
         """
         Salva os resultados finais em um arquivo CSV.
