@@ -194,6 +194,10 @@ class HandCalculator:
             self._df = pd.read_excel(file_path)
         else:
             raise ValueError("Formato de arquivo inválido. Utilize um arquivo CSV ou Excel.")
+        
+        cols_para_remover = [col for col in self._df.columns if col.upper().startswith('LAT') or col.upper().startswith('LON')]
+        self._df.drop(columns=cols_para_remover, inplace=True)
+            
         self._df["id"] = self._df.index
         print(f"[Load Data] Dados carregados com sucesso. Total de registros: {len(self._df)}")
 
@@ -370,6 +374,35 @@ class HandCalculator:
         # Realiza o merge dos resultados com o DataFrame original (usando a coluna 'id')
         # Assim, os registros sem geocodificação (que não foram amostrados) terão os campos HAND vazios.
         final_df = self._df.merge(formatted_df[['id', 'categoria_hand']], on='id', how='left')
+        # Renomeia as colunas para o formato padronizado
+        final_df = final_df.rename(columns={
+            "Endereco": "ADDRESS",
+            "Latitude": "LAT",
+            "Longitude": "LON",
+            "categoria_hand": "CATEGORIA_HAND"
+        })
+
+        # Adiciona as colunas que serão geradas dinamicamente, se ainda não existirem
+        for col in ["UNDERWRITER_NAME", "INSURANCE_NAME", "CONTRACT_CODE"]:
+            if col not in final_df.columns:
+                final_df[col] = None  # ou atribua um valor padrão
+
+        # Adiciona a data de análise (gerada dinamicamente)
+        final_df["ANALYSIS_DATE"] = pd.Timestamp.today().strftime("%Y-%m-%d")
+
+        # Reordena as colunas conforme o padrão desejado
+        final_df = final_df[[
+            "ADDRESS",
+            "TIV",
+            "LAT",
+            "LON",
+            "UNDERWRITER_NAME",
+            "INSURANCE_NAME",
+            "CONTRACT_CODE",
+            "CATEGORIA_HAND",
+            "MISSING_ADDRESS",
+            "ANALYSIS_DATE"
+        ]]
 
         return final_df
     def save_results(self, df: pd.DataFrame, output_path: str) -> None:
