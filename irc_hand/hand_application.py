@@ -399,10 +399,12 @@ class HandCalculator:
         # Adiciona a data de análise (gerada dinamicamente)
         final_df["ANALYSIS_DATE"] = pd.Timestamp.today().strftime("%Y-%m-%d")
 
-        # Reordena as colunas conforme o padrão desejado
+        # Reordena as colunas conforme o padrão desejado, incluindo as colunas "DM" e "LC"
         final_df = final_df[[
             "ADDRESS",
             "TIV",
+            "DM",
+            "LC",
             "LAT",
             "LON",
             "UNDERWRITER_NAME",
