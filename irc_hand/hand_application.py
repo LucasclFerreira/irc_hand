@@ -77,6 +77,7 @@ import ee
 import sys
 import time
 import json
+import csv
 from typing import Optional, List
 
 import asyncio
@@ -91,6 +92,17 @@ from geopy.geocoders import GoogleV3
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
     raise ValueError("A chave da API do Google Maps não foi encontrada no arquivo .env.")
+
+
+
+def get_separator(file_path: str) -> str:
+    with open(file_path, 'r', encoding='utf-8') as file:
+
+        sample = file.read(1024)
+
+        sniffer = csv.Sniffer()
+        dialect = sniffer.sniff(sample)
+        return dialect.delimiter
 
 
 
@@ -189,13 +201,13 @@ class HandCalculator:
         print(f"[Load Data] Carregando dados do arquivo: {file_path}")
         extension = file_path.split('.')[-1].lower()
         if extension == "csv":
-            self._df = pd.read_csv(file_path, sep=';')
+            self._df = pd.read_csv(file_path, sep=get_separator(file_path))
         elif extension in ["xls", "xlsx"]:
             self._df = pd.read_excel(file_path)
         else:
             raise ValueError("Formato de arquivo inválido. Utilize um arquivo CSV ou Excel.")
         
-        cols_para_remover = [col for col in self._df.columns if col.upper().startswith('LAT') or col.upper().startswith('LON')]
+        cols_para_remover = [col for col in self._df.columns if col.upper().startswith('LAT') or col.upper().startswith('LON') or col.upper().startswith("CATEGORIA_HAND")]
         self._df.drop(columns=cols_para_remover, inplace=True)
             
         self._df["id"] = self._df.index
@@ -346,7 +358,7 @@ class HandCalculator:
             pd.DataFrame: DataFrame contendo os resultados amostrados e formatados.
         """
         print("[HAND] Iniciando amostragem dos valores HAND...")
-        hand_image = ee.Image("projects/ee-irc/assets/handCategorizado")
+        hand_image = ee.Image("projects/ee-irc/assets/risco_hand_brasil")
         points_hand = hand_image.sampleRegions(collection=points)
 
         points_df = ee.data.computeFeatures({
@@ -354,7 +366,6 @@ class HandCalculator:
             "fileFormat": "PANDAS_DATAFRAME"
         })
 
-        # Mapeia os valores HAND para as descrições categóricas
         formatted_df = (
             points_df
             .drop("geo", axis=1)
@@ -371,8 +382,6 @@ class HandCalculator:
         )
         print("[HAND] Amostragem e mapeamento dos valores HAND concluídos.")
 
-        # Realiza o merge dos resultados com o DataFrame original (usando a coluna 'id')
-        # Assim, os registros sem geocodificação (que não foram amostrados) terão os campos HAND vazios.
         final_df = self._df.merge(formatted_df[['id', 'categoria_hand']], on='id', how='left')
         # Renomeia as colunas para o formato padronizado
         final_df = final_df.rename(columns={
