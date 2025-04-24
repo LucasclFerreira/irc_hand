@@ -204,6 +204,7 @@ class HandCalculator:
             self._df = pd.read_csv(file_path, sep=get_separator(file_path))
         elif extension in ["xls", "xlsx"]:
             self._df = pd.read_excel(file_path)
+            print(f"[Load Data] Arquivo Excel carregado com sucesso. Total de registros: {self._df.head()}")
         else:
             raise ValueError("Formato de arquivo inválido. Utilize um arquivo CSV ou Excel.")
         
@@ -496,7 +497,7 @@ class HandCalculator:
 if __name__ == "__main__":
     hand = HandCalculator(project_name="ee-paulomoraes")
     hand.run(
-        'teste.csv',
-        'ADDRESSES',
+        '/home/pcmoraes/Desktop/irb/pacote/irc_hand/irc_hand/teste.csv',
+        'ADDRESS',
         'output.csv'
     )
