@@ -200,20 +200,57 @@ class HandCalculator:
         """
         print(f"[Load Data] Carregando dados do arquivo: {file_path}")
         extension = file_path.split('.')[-1].lower()
-        if extension == "csv":
-            self._df = pd.read_csv(file_path, sep=get_separator(file_path))
-        elif extension in ["xls", "xlsx"]:
-            self._df = pd.read_excel(file_path)
-            print(f"[Load Data] Arquivo Excel carregado com sucesso. Total de registros: {self._df.head()}")
-        else:
-            raise ValueError("Formato de arquivo inválido. Utilize um arquivo CSV ou Excel.")
         
-        cols_para_remover = [col for col in self._df.columns if col.upper().startswith('LAT') or col.upper().startswith('LON') or col.upper().startswith("CATEGORIA_HAND")]
-        self._df.drop(columns=cols_para_remover, inplace=True)
+        read_options = {
+            'thousands': '.', 
+            'decimal': ',',    
+            'dtype': {
+                'TIV': str,    
+                'ADDRESS': str 
+            }
+        }
+        
+        try:
+            if extension == "csv":
+                self._df = pd.read_csv(file_path, **read_options)
+            elif extension in ["xls", "xlsx"]:
+                self._df = pd.read_excel(file_path, **read_options)
+            else:
+                raise ValueError("Formato de arquivo inválido. Utilize um arquivo CSV ou Excel.")
             
-        self._df["id"] = self._df.index
-        print(f"[Load Data] Dados carregados com sucesso. Total de registros: {len(self._df)}")
-
+            def clean_and_convert_tiv(value):
+                if pd.isna(value):
+                    return 0.0
+                
+                import re
+                match = re.search(r'([\d.,]+)', str(value))
+                if match:
+                    value = match.group(1)
+                
+                value = value.replace('.', '').replace(',', '.')
+                
+                try:
+                    return float(value)
+                except ValueError:
+                    print(f"[Aviso] Não foi possível converter o valor: {value}")
+                    return 0.0
+            
+            self._df['TIV'] = self._df['TIV'].apply(clean_and_convert_tiv)
+            
+            cols_para_remover = [col for col in self._df.columns if col.upper().startswith('LAT') or col.upper().startswith('LON') or col.upper().startswith("CATEGORIA_HAND")]
+            self._df.drop(columns=cols_para_remover, inplace=True)
+            
+            self._df["id"] = self._df.index
+            
+            print(f"[Load Data] Dados carregados com sucesso. Total de registros: {len(self._df)}")
+            
+            print("[Load Data] Primeiros valores de TIV:")
+            print(self._df['TIV'].head())
+        
+        except Exception as e:
+            print(f"[Erro] Falha ao carregar dados: {e}")
+            raise
+        
     def collect_coordinates(self, address_column: str) -> ee.FeatureCollection:
         """
         Realiza a geocodificação dos endereços de forma síncrona e retorna uma FeatureCollection do Earth Engine.
@@ -384,7 +421,13 @@ class HandCalculator:
         print("[HAND] Amostragem e mapeamento dos valores HAND concluídos.")
 
         final_df = self._df.merge(formatted_df[['id', 'categoria_hand']], on='id', how='left')
-        # Renomeia as colunas para o formato padronizado
+        
+        if 'DM' not in final_df.columns:
+            final_df['DM'] = final_df['TIV']
+        
+        if 'LC' not in final_df.columns:
+            final_df['LC'] = 0 
+        
         final_df = final_df.rename(columns={
             "Endereco": "ADDRESS",
             "Latitude": "LAT",
@@ -392,15 +435,12 @@ class HandCalculator:
             "categoria_hand": "CATEGORIA_HAND"
         })
 
-        # Adiciona as colunas que serão geradas dinamicamente, se ainda não existirem
         for col in ["UNDERWRITER_NAME", "INSURANCE_NAME", "CONTRACT_CODE"]:
             if col not in final_df.columns:
-                final_df[col] = None  # ou atribua um valor padrão
+                final_df[col] = None 
 
-        # Adiciona a data de análise (gerada dinamicamente)
         final_df["ANALYSIS_DATE"] = pd.Timestamp.today().strftime("%Y-%m-%d")
 
-        # Reordena as colunas conforme o padrão desejado, incluindo as colunas "DM" e "LC"
         final_df = final_df[[
             "ADDRESS",
             "TIV",
